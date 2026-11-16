@@ -6,4 +6,12 @@
         <item name="colorOnPrimary">#FFFFFF</item>
         <item name="android:statusBarColor">#1565C0</item>
     </style>
+
+    <!-- DLNA playback takes the whole screen, pure black behind the video -->
+    <style name="DlnaPlayerTheme" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentTransitions">false</item>
+    </style>
 </resources>

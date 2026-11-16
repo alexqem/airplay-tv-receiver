@@ -50,5 +50,14 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- DLNA cast playback: launched by the renderer when a control point sends SetURI+Play -->
+        <activity
+            android:name=".dlna.DlnaPlayerActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/DlnaPlayerTheme" />
+
     </application>
 </manifest>

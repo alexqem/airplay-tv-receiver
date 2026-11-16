@@ -14,7 +14,13 @@
     <string name="status_connected">Status: Connected</string>
 
     <!-- Signature line on the idle overlay -->
-    <string name="credit">Open Source AirPlay Receiver</string>
+    <string name="credit">Open Source AirPlay + DLNA Receiver</string>
+
+    <!-- DLNA player overlay -->
+    <string name="dlna_playing">Playing cast</string>
+    <string name="dlna_volume">Volume: %1$d%%</string>
+    <string name="dlna_error">Playback failed — the stream could not be decoded</string>
+    <string name="dlna_controls_hint">OK: pause · ←/→: seek ±30s · ↑/↓: volume · Back: stop</string>
 
     <!-- Shown in the system notification settings for this app -->
     <string name="notification_channel_name">AirPlay Service</string>

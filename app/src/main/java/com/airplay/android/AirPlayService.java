@@ -16,6 +16,8 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import com.airplay.android.server.AirPlayServer;
+import com.airplay.android.dlna.DlnaController;
+import com.airplay.android.dlna.DlnaRenderer;
 import com.github.serezhka.jap2lib.AirPlay;
 
 import java.nio.charset.StandardCharsets;
@@ -48,6 +50,70 @@ public class AirPlayService extends Service {
      */
     private static final ExecutorService LIFECYCLE = Executors.newSingleThreadExecutor();
     private static AirPlayServer sServer;
+    private static DlnaRenderer sDlnaRenderer;
+
+    /**
+     * How many activities (main screen, DLNA player) are currently on screen. The receiver only
+     * advertises itself while at least one is: both need a visible surface - mirroring decodes
+     * into the main activity's one, and a cast buried under the vendor home gets killed by its
+     * screensaver. The count matters because the player covers the main screen while it plays,
+     * which must not tear the receiver down mid-cast.
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger VISIBLE =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Stop is delayed a little so a hand-off between the two screens does not bounce the stack. */
+    private static final android.os.Handler MAIN = new android.os.Handler(
+            android.os.Looper.getMainLooper());
+    private static Runnable pendingStop;
+    /** Set when the receiver was stopped by hand, so visibility alone does not restart it. */
+    public static volatile boolean userStopped = false;
+
+    /** Called by each receiver activity from onStart. */
+    public static void activityVisible(Context ctx) {
+        if (pendingStop != null) {
+            MAIN.removeCallbacks(pendingStop);
+            pendingStop = null;
+        }
+        if (VISIBLE.incrementAndGet() == 1 && !userStopped) {
+            start(ctx);
+        }
+    }
+
+    /** Called by each receiver activity when it stops being visible. */
+    public static void activityHidden(Context ctx) {
+        if (VISIBLE.decrementAndGet() > 0 || pendingStop != null) return;
+        Context app = ctx.getApplicationContext();
+        pendingStop = () -> {
+            pendingStop = null;
+            stop(app);
+        };
+        MAIN.postDelayed(pendingStop, 2000);
+    }
+
+    /** Receiver screen asking for an immediate stop (the toggle button). */
+    public static void requestStop(Context ctx) {
+        userStopped = true;
+        VISIBLE.set(0);
+        stop(ctx.getApplicationContext());
+    }
+
+    public static void start(Context ctx) {
+        Intent intent = new Intent(ctx, AirPlayService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent);
+        } else {
+            ctx.startService(intent);
+        }
+    }
+
+    public static void stop(Context ctx) {
+        ctx.stopService(new Intent(ctx, AirPlayService.class));
+    }
+
+    /** True while the receiver (AirPlay + DLNA) is up; lets the UI notice an outside stop. */
+    public static boolean isRunning() {
+        return sServer != null;
+    }
 
     private WifiManager.MulticastLock multicastLock;
     private WifiManager.WifiLock wifiLock;
@@ -66,6 +132,7 @@ public class AirPlayService extends Service {
         startForeground(NOTIFICATION_ID, buildNotification(serverName + " · starting"));
 
         acquireLocks();
+        DlnaController.get().setHostContext(this);
         LIFECYCLE.submit(() -> startServer(serverName, deviceId));
         return START_NOT_STICKY;
     }
@@ -135,6 +202,9 @@ public class AirPlayService extends Service {
             server.start();
             sServer = server;
             Log.i(TAG, "AirPlay server started as '" + serverName + "' (id " + deviceId + ")");
+
+            startDlna(serverName, deviceId);
+
             updateNotification(serverName + " · ready");
         } catch (Exception e) {
             Log.e(TAG, "Failed to start AirPlay server", e);
@@ -143,8 +213,41 @@ public class AirPlayService extends Service {
         }
     }
 
+    /**
+     * The DLNA renderer fails soft: a broken UPnP stack must not take the AirPlay receiver
+     * down with it, so any startup error is logged and playback stays AirPlay-only.
+     */
+    private static void startDlna(String serverName, String deviceId) {
+        try {
+            DlnaRenderer renderer = new DlnaRenderer(serverName, resolveDlnaUuid(deviceId));
+            renderer.start();
+            sDlnaRenderer = renderer;
+            Log.i(TAG, "DLNA renderer started as '" + serverName + "'");
+        } catch (Exception e) {
+            Log.e(TAG, "DLNA renderer failed to start, continuing without it", e);
+        }
+    }
+
+    /** Stretches the 12-hex device id into the 8-4-4-4-12 shape UPnP device UUIDs must have. */
+    private static String resolveDlnaUuid(String deviceId) {
+        StringBuilder hex = new StringBuilder();
+        while (hex.length() < 32) {
+            hex.append(deviceId);
+        }
+        String full = hex.substring(0, 32);
+        return String.format("%s-%s-%s-%s-%s",
+                full.substring(0, 8), full.substring(8, 12), full.substring(12, 16),
+                full.substring(16, 20), full.substring(20, 32));
+    }
+
     /** Runs on {@link #LIFECYCLE}. */
     private static void stopServer() {
+        if (sDlnaRenderer != null) {
+            sDlnaRenderer.stop();
+            sDlnaRenderer = null;
+            DlnaController.get().onPlaybackStopped();
+            Log.i(TAG, "DLNA renderer stopped");
+        }
         if (sServer == null) return;
         sServer.stop();
         sServer = null;
@@ -192,11 +295,11 @@ public class AirPlayService extends Service {
         super.onTaskRemoved(rootIntent);
     }
 
-    @Override
     public void onDestroy() {
         super.onDestroy();
         LIFECYCLE.submit(AirPlayService::stopServer);
         releaseLocks();
+        VISIBLE.set(0);
         Log.i(TAG, "AirPlay service destroyed");
     }
 

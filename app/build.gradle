@@ -31,8 +31,14 @@ android {
         applicationId "com.airplay.android"
         minSdk 26
         targetSdk 33
-        versionCode 2
-        versionName "1.1"
+        versionCode 3
+        versionName "1.2"
+
+        // libVLC ships binaries for every ABI; the receivers this app targets are arm64 TVs,
+        // so dropping the others keeps the APK at a fraction of the size
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
     }
 
     buildTypes {
@@ -85,6 +91,9 @@ dependencies {
 
     // Netty for RTSP server
     implementation 'io.netty:netty-all:4.1.94.Final'
+
+    // Full-featured playback for DLNA casts (AVI/XviD/MKV and friends the platform player chokes on)
+    implementation 'org.videolan.android:libvlc-all:3.6.2'
 
     testImplementation 'junit:junit:4.13.2'
 }

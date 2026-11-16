@@ -31,6 +31,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private static final String TAG = "MainActivity";
     /** How long the overlay stays visible after the remote is used, in ms. */
     private static final long CONTROLS_TIMEOUT_MS = 6000;
+    /** Vendor TVs stop the service on their own (dream/screensaver churn); re-check at this rate. */
+    private static final long SERVICE_GUARD_PERIOD_MS = 4000;
 
     private FrameLayout root;
     private SurfaceView surfaceView;
@@ -43,12 +45,24 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private TextView statusText;
     private TextView ipText;
     private boolean serverRunning = false;
-    /** Set when the user stops the server by hand, so returning to the app does not restart it. */
-    private boolean userStopped = false;
     private int videoWidth;
     private int videoHeight;
     /** Width of one side of the moulding, in pixels. */
     private int frameWidthPx;
+
+    private final android.os.Handler mainHandler = new android.os.Handler(
+            android.os.Looper.getMainLooper());
+
+    private final Runnable serviceGuard = new Runnable() {
+        @Override
+        public void run() {
+            if (!AirPlayService.userStopped && !AirPlayService.isRunning()) {
+                Log.w(TAG, "Receiver died on its own, restarting the service");
+                startServer();
+            }
+            mainHandler.postDelayed(this, SERVICE_GUARD_PERIOD_MS);
+        }
+    };
 
     private final Runnable hideControls = new Runnable() {
         @Override
@@ -109,13 +123,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
         btnToggle.setOnClickListener(v -> toggleServer());
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
-            }
-        }
+        // POST_NOTIFICATIONS is deliberately not requested: the system dialog covers the
+        // activity on TV, onStop then stops the service and the receiver goes offline until
+        // the dialog is answered. The foreground service runs fine without it - only the
+        // status notification stays hidden.
 
         displayIpAddress();
     }
@@ -127,17 +138,31 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     @Override
     protected void onStart() {
         super.onStart();
-        if (!userStopped) {
+        AirPlayService.activityVisible(this);
+        if (!AirPlayService.userStopped) {
             startServer();
         }
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        mainHandler.removeCallbacks(serviceGuard);
+        mainHandler.postDelayed(serviceGuard, SERVICE_GUARD_PERIOD_MS);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mainHandler.removeCallbacks(serviceGuard);
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
-        Log.i(TAG, "Activity no longer visible, stopping the receiver");
-        stopServer();
-        userStopped = false;
+        // Hand the decision over to the presence counter: the DLNA player legitimately covers
+        // this screen while a cast is playing, which must not kill the receiver mid-stream
+        AirPlayService.activityHidden(this);
     }
 
     private void displayIpAddress() {
@@ -250,21 +275,15 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
     private void toggleServer() {
         if (!serverRunning) {
-            userStopped = false;
+            AirPlayService.userStopped = false;
             startServer();
         } else {
-            userStopped = true;
             stopServer();
         }
     }
 
     private void startServer() {
-        Intent intent = new Intent(this, AirPlayService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
+        AirPlayService.start(this);
 
         serverRunning = true;
         btnToggle.setText(R.string.btn_stop);
@@ -273,9 +292,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     }
 
     private void stopServer() {
-        // stopService (rather than a command Intent) also works while the Activity is being
-        // torn down, when starting a service would be treated as a background start
-        stopService(new Intent(this, AirPlayService.class));
+        AirPlayService.requestStop(this);
 
         serverRunning = false;
         videoWidth = 0;
@@ -310,5 +327,6 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         super.onDestroy();
         VideoHolder.setVideoSizeListener(null);
         controls.removeCallbacks(hideControls);
+        mainHandler.removeCallbacks(serviceGuard);
     }
 }
