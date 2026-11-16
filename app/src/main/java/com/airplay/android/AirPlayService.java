@@ -1,5 +1,6 @@
 package com.airplay.android;
 
+import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -51,52 +52,19 @@ public class AirPlayService extends Service {
     private static final ExecutorService LIFECYCLE = Executors.newSingleThreadExecutor();
     private static AirPlayServer sServer;
     private static DlnaRenderer sDlnaRenderer;
+    /** Application context captured at onCreate for background UI launches and callbacks. */
+    private static Context sAppContext;
 
-    /**
-     * How many activities (main screen, DLNA player) are currently on screen. The receiver only
-     * advertises itself while at least one is: both need a visible surface - mirroring decodes
-     * into the main activity's one, and a cast buried under the vendor home gets killed by its
-     * screensaver. The count matters because the player covers the main screen while it plays,
-     * which must not tear the receiver down mid-cast.
-     */
-    private static final java.util.concurrent.atomic.AtomicInteger VISIBLE =
-            new java.util.concurrent.atomic.AtomicInteger();
-    /** Stop is delayed a little so a hand-off between the two screens does not bounce the stack. */
-    private static final android.os.Handler MAIN = new android.os.Handler(
-            android.os.Looper.getMainLooper());
-    private static Runnable pendingStop;
     /** Set when the receiver was stopped by hand, so visibility alone does not restart it. */
     public static volatile boolean userStopped = false;
 
-    /** Called by each receiver activity from onStart. */
-    public static void activityVisible(Context ctx) {
-        if (pendingStop != null) {
-            MAIN.removeCallbacks(pendingStop);
-            pendingStop = null;
-        }
-        if (VISIBLE.incrementAndGet() == 1 && !userStopped) {
-            start(ctx);
-        }
-    }
-
-    /** Called by each receiver activity when it stops being visible. */
-    public static void activityHidden(Context ctx) {
-        if (VISIBLE.decrementAndGet() > 0 || pendingStop != null) return;
-        Context app = ctx.getApplicationContext();
-        pendingStop = () -> {
-            pendingStop = null;
-            stop(app);
-        };
-        MAIN.postDelayed(pendingStop, 2000);
-    }
-
-    /** Receiver screen asking for an immediate stop (the toggle button). */
-    public static void requestStop(Context ctx) {
-        userStopped = true;
-        VISIBLE.set(0);
-        stop(ctx.getApplicationContext());
-    }
-
+    /**
+     * The receiver runs permanently once started: both AirPlay and DLNA are useless when they
+     * only exist while the app happens to be on screen (vendor TVs bury it under their home,
+     * screensaver and cast overlays within seconds). Playback surfaces come later - mirroring
+     * pulls the main screen up, a cast opens the player - and that UI launch from a background
+     * service needs the "draw over other apps" permission, which {@link #launchUi} honours.
+     */
     public static void start(Context ctx) {
         Intent intent = new Intent(ctx, AirPlayService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -110,9 +78,53 @@ public class AirPlayService extends Service {
         ctx.stopService(new Intent(ctx, AirPlayService.class));
     }
 
+    /** Receiver screen asking for an immediate stop (the toggle button). */
+    public static void requestStop(Context ctx) {
+        userStopped = true;
+        stop(ctx.getApplicationContext());
+    }
+
     /** True while the receiver (AirPlay + DLNA) is up; lets the UI notice an outside stop. */
     public static boolean isRunning() {
         return sServer != null;
+    }
+
+    /**
+     * Brings receiver UI up from wherever the TV currently is. With the overlay permission the
+     * activity is started right away; without it a tappable notification is posted instead.
+     *
+     * @return true when the activity was started, false when only a notification was offered
+     */
+    public static boolean launchUi(Context ctx, Class<? extends Activity> activity, String title) {
+        Context app = sAppContext != null ? sAppContext
+                : (ctx != null ? ctx.getApplicationContext() : null);
+        if (app == null) return false;
+        if (Settings.canDrawOverlays(app)) {
+            Intent intent = new Intent(app, activity);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            try {
+                app.startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                Log.w(TAG, "Background activity start failed, falling back to notification", e);
+            }
+        }
+        NotificationManager nm = app.getSystemService(NotificationManager.class);
+        if (nm == null) return false;
+        Intent open = new Intent(app, activity);
+        PendingIntent contentIntent = PendingIntent.getActivity(app, activity.hashCode(), open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(app, CHANNEL_ID)
+                : new Notification.Builder(app);
+        builder.setContentTitle(title)
+                .setContentText(app.getString(R.string.tap_to_open))
+                .setContentIntent(contentIntent)
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setAutoCancel(true);
+        // A separate id from the foreground notification so it does not get overwritten
+        nm.notify(2000, builder.build());
+        return false;
     }
 
     private WifiManager.MulticastLock multicastLock;
@@ -122,6 +134,7 @@ public class AirPlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        sAppContext = getApplicationContext();
         createNotificationChannel();
     }
 
@@ -134,7 +147,8 @@ public class AirPlayService extends Service {
         acquireLocks();
         DlnaController.get().setHostContext(this);
         LIFECYCLE.submit(() -> startServer(serverName, deviceId));
-        return START_NOT_STICKY;
+        // Stick around: the system restarts the receiver if it kills the process for memory
+        return START_STICKY;
     }
 
     /**
@@ -299,7 +313,6 @@ public class AirPlayService extends Service {
         super.onDestroy();
         LIFECYCLE.submit(AirPlayService::stopServer);
         releaseLocks();
-        VISIBLE.set(0);
         Log.i(TAG, "AirPlay service destroyed");
     }
 
@@ -350,6 +363,10 @@ public class AirPlayService extends Service {
         @Override
         public void onVideoFormat(int width, int height) {
             Log.i("AirPlayService", "Video format: " + width + "x" + height);
+            // A mirror session produces frames whether or not the UI is up; if the sender
+            // started while the app was buried, pull the main screen forward (overlay
+            // permission) or offer a notification to open it
+            launchUi(null, MainActivity.class, "AirPlay mirroring started");
             VideoHolder.onVideoFormat(width, height);
         }
 

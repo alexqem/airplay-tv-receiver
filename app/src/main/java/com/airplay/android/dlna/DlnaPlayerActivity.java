@@ -151,14 +151,6 @@ public class DlnaPlayerActivity extends Activity implements DlnaController.Playe
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-        // Counts as receiver UI: while the player is on screen the service must stay up even
-        // though it covers the main screen
-        com.airplay.android.AirPlayService.activityVisible(this);
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
         main.removeCallbacks(progressTicker);
@@ -174,7 +166,6 @@ public class DlnaPlayerActivity extends Activity implements DlnaController.Playe
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        com.airplay.android.AirPlayService.activityHidden(this);
         DlnaController.get().detachPlayer(this);
         if (mediaPlayer != null) {
             mediaPlayer.setEventListener(null);

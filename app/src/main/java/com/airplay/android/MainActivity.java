@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -42,6 +43,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private View mirrorFrame;
     private LinearLayout controls;
     private Button btnToggle;
+    private Button btnOverlay;
     private TextView statusText;
     private TextView ipText;
     private boolean serverRunning = false;
@@ -86,6 +88,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         mirrorFrame = findViewById(R.id.mirror_frame);
         controls = findViewById(R.id.controls);
         btnToggle = findViewById(R.id.btn_toggle);
+        btnOverlay = findViewById(R.id.btn_overlay);
         statusText = findViewById(R.id.status_text);
         ipText = findViewById(R.id.ip_text);
 
@@ -122,6 +125,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }));
 
         btnToggle.setOnClickListener(v -> toggleServer());
+        btnOverlay.setOnClickListener(v -> requestOverlayPermission());
 
         // POST_NOTIFICATIONS is deliberately not requested: the system dialog covers the
         // activity on TV, onStop then stops the service and the receiver goes offline until
@@ -138,15 +142,21 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     @Override
     protected void onStart() {
         super.onStart();
-        AirPlayService.activityVisible(this);
-        if (!AirPlayService.userStopped) {
+        // The service is persistent (runs from first launch / boot); this only repairs a
+        // receiver that was stopped by hand or killed outside our control
+        if (!AirPlayService.userStopped && !AirPlayService.isRunning()) {
             startServer();
+        } else {
+            serverRunning = AirPlayService.isRunning();
+            btnToggle.setText(getString(serverRunning
+                    ? R.string.btn_stop : R.string.btn_start));
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        updateOverlayButton();
         mainHandler.removeCallbacks(serviceGuard);
         mainHandler.postDelayed(serviceGuard, SERVICE_GUARD_PERIOD_MS);
     }
@@ -155,14 +165,6 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     protected void onPause() {
         super.onPause();
         mainHandler.removeCallbacks(serviceGuard);
-    }
-
-    @Override
-    protected void onStop() {
-        super.onStop();
-        // Hand the decision over to the presence counter: the DLNA player legitimately covers
-        // this screen while a cast is playing, which must not kill the receiver mid-stream
-        AirPlayService.activityHidden(this);
     }
 
     private void displayIpAddress() {
@@ -265,6 +267,19 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         return super.dispatchKeyEvent(event);
     }
 
+    private void requestOverlayPermission() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            // Some TV builds only offer the global list
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -302,6 +317,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         controls.setVisibility(View.VISIBLE);
         background.setVisibility(View.VISIBLE);
         mirrorFrame.setVisibility(View.GONE);
+    }
+
+    /** Overlay permission is what lets a cast or mirror open its screen from the background. */
+    private void updateOverlayButton() {
+        boolean granted = Settings.canDrawOverlays(this);
+        btnOverlay.setVisibility(granted ? View.GONE : View.VISIBLE);
     }
 
     @Override

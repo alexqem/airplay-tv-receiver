@@ -9,6 +9,8 @@
 
     <string name="btn_start">Start Service</string>
     <string name="btn_stop">Stop Service</string>
+    <string name="btn_overlay">Разрешить запуск в фоне (поверх окон)</string>
+    <string name="tap_to_open">Нажмите, чтобы открыть воспроизведение на ТВ</string>
     <string name="status_idle">Status: Idle</string>
     <string name="status_running">Status: Running</string>
     <string name="status_connected">Status: Connected</string>

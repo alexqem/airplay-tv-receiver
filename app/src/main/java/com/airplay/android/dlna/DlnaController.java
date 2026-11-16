@@ -141,7 +141,7 @@ public final class DlnaController {
         if (p != null) main.post(() -> p.onVolume(percent));
     }
 
-    /** Launched on the main thread; the receiver's UI must be up for the activity start to pass BAL. */
+    /** Launched on the main thread; honours the overlay permission, falls back to a notification. */
     private void launchPlayerIfPossible() {
         if (player.get() != null || launchPending || TextUtils.isEmpty(currentUri)) return;
         if (hostContext == null) {
@@ -149,9 +149,16 @@ public final class DlnaController {
             return;
         }
         launchPending = true;
-        Intent intent = new Intent(hostContext, DlnaPlayerActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        hostContext.startActivity(intent);
+        String title = TextUtils.isEmpty(currentTitle)
+                ? hostContext.getString(com.airplay.android.R.string.dlna_playing)
+                : currentTitle;
+        // When the TV is busy with something else and the overlay permission is not granted,
+        // only a notification goes out - let later SetURI calls retry instead of blocking
+        boolean started = com.airplay.android.AirPlayService.launchUi(hostContext,
+                DlnaPlayerActivity.class, title);
+        if (!started) {
+            launchPending = false;
+        }
     }
 
     /** Called from the player once it is on screen and ready to take calls. */
